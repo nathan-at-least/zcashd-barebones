@@ -1,0 +1,14 @@
+on: pull_request
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install apt dependencies
+        run: >
+          apt-get install build-essential pkg-config libc6-dev m4
+          g++-multilib autoconf libtool ncurses-dev unzip git python3
+          python3-zmq zlib1g-dev curl bsdmainutils automake libtinfo5
+
+      - uses: actions/checkout@v2
+
