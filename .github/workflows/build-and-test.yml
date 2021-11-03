@@ -1,3 +1,4 @@
+name: Build and Test
 on: push
 
 jobs:
@@ -12,3 +13,8 @@ jobs:
 
       - uses: actions/checkout@v2
 
+      - run: ./zcutil/fetch-params.sh
+
+      - run: ./zcutil/build.sh -j$(nproc)
+
+      - run: ./qa/zcash/full_test_suite.py
