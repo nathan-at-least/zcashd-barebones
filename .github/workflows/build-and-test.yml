@@ -20,16 +20,17 @@ jobs:
           make --version &&
           as --version
 
-      - run: make -C ./depends DEBUG=1
+      - run: >
+          make -C ./depends DEBUG=1 ||
+          find '/home/runner/work/zcashd-barebones/zcashd-barebones/depends/x86_64-pc-linux-gnu/vendored-sources/'
+            -exec ls -ld '{}' \; &&
+          false
 
       - run: ./autogen.sh
 
       - run: >
           CONFIG_SITE="$PWD/depends/x86_64-pc-linux-gnu/share/config.site"
-            ./configure ||
-          find '/home/runner/work/zcashd-barebones/zcashd-barebones/depends/x86_64-pc-linux-gnu/vendored-sources/'
-            -exec ls -ld '{}' \; &&
-          false
+            ./configure
 
       - run: make
 
