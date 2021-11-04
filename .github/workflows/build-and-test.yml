@@ -16,7 +16,7 @@ jobs:
       - run: ./zcutil/fetch-params.sh
 
       - name: Toolchain Versions
-      - run: >
+        run: >
           make --version &&
           as --version
 
