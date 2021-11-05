@@ -18,7 +18,7 @@ jobs:
           make --version &&
           as --version
 
-     - run: make -C ./depends DEBUG=1
+      - run: make -C ./depends DEBUG=1
 
       - run: ./autogen.sh
 
