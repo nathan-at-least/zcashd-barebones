@@ -20,13 +20,15 @@ jobs:
           make --version &&
           as --version
 
+      - run: df -h
+
       - run: >
           make -C ./depends DEBUG=1 ||
+          df -h &&
+          du -sh '/home/runner/work/zcashd-barebones/zcashd-barebones/depends/x86_64-pc-linux-gnu/vendored-sources/' &&
           find '/home/runner/work/zcashd-barebones/zcashd-barebones/depends/x86_64-pc-linux-gnu/vendored-sources/'
             -maxdepth 1
             -exec ls -ld '{}' \; &&
-          df -h &&
-          du -sh '/home/runner/work/zcashd-barebones/zcashd-barebones/depends/x86_64-pc-linux-gnu/vendored-sources/' &&
           false
 
       - run: ./autogen.sh
