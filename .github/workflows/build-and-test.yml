@@ -13,9 +13,11 @@ jobs:
           python3-zmq zlib1g-dev curl bsdmainutils automake libtinfo5
           python3-pip python3-dev libffi-dev
 
+      - run: pip3 install --upgrade pip
+
       - uses: actions/checkout@v2
 
-      - run: pip3 install -r ./contrib/ci-builders/tekton/requirements.txt
+      - run: pip install -r ./contrib/ci-builders/tekton/requirements.txt
 
       - run: ./zcutil/build.sh
 
