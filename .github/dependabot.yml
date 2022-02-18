@@ -7,8 +7,8 @@ updates:
     timezone: Etc/UTC
   open-pull-requests-limit: 10
   reviewers:
-  - str4d
+  - nathan-at-least
   assignees:
-  - str4d
+  - nathan-at-least
   labels:
   - "A-CI"
