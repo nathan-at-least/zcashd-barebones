@@ -15,9 +15,9 @@ jobs:
 
       - run: pip3 install --upgrade pip
 
-      - uses: actions/checkout@v2
+      - run: pip install pyzmq simplejson
 
-      - run: pip install -r ./contrib/ci-builders/tekton/requirements.txt
+      - uses: actions/checkout@v2
 
       - run: ./zcutil/build.sh
 
