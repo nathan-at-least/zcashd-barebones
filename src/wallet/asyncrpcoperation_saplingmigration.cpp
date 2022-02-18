@@ -85,7 +85,7 @@ bool AsyncRPCOperation_saplingmigration::main_impl() {
         // We set minDepth to 11 to avoid unconfirmed notes and in anticipation of specifying
         // an anchor at height N-10 for each Sprout JoinSplit description
         // Consider, should notes be sorted?
-        pwalletMain->GetFilteredNotes(sproutEntries, saplingEntries, "", 11);
+        pwalletMain->GetFilteredNotes(sproutEntries, saplingEntries, std::nullopt, 11);
     }
     CAmount availableFunds = 0;
     for (const SproutNoteEntry& sproutEntry : sproutEntries) {
@@ -191,37 +191,22 @@ CAmount AsyncRPCOperation_saplingmigration::chooseAmount(const CAmount& availabl
     return amount;
 }
 
-// Unless otherwise specified, the migration destination address is the address for Sapling account 0
+// Unless otherwise specified, the migration destination address is the
+// default address for the key at m/32'/coin_type'/0x7FFFFFFF'/0'
 libzcash::SaplingPaymentAddress AsyncRPCOperation_saplingmigration::getMigrationDestAddress(const HDSeed& seed) {
     KeyIO keyIO(Params());
     if (mapArgs.count("-migrationdestaddress")) {
         std::string migrationDestAddress = mapArgs["-migrationdestaddress"];
         auto address = keyIO.DecodePaymentAddress(migrationDestAddress);
-        auto saplingAddress = std::get_if<libzcash::SaplingPaymentAddress>(&address);
-        assert(saplingAddress != nullptr); // This is checked in init.cpp
+        assert(address.has_value()); // This is checked in init.cpp
+        auto saplingAddress = std::get_if<libzcash::SaplingPaymentAddress>(&address.value());
+        assert(saplingAddress != nullptr); // This is also checked in init.cpp
         return *saplingAddress;
     }
-    // Derive the address for Sapling account 0
-    auto m = libzcash::SaplingExtendedSpendingKey::Master(seed);
-    uint32_t bip44CoinType = Params().BIP44CoinType();
 
-    // We use a fixed keypath scheme of m/32'/coin_type'/account'
-    // Derive m/32'
-    auto m_32h = m.Derive(32 | ZIP32_HARDENED_KEY_LIMIT);
-    // Derive m/32'/coin_type'
-    auto m_32h_cth = m_32h.Derive(bip44CoinType | ZIP32_HARDENED_KEY_LIMIT);
-
-    // Derive m/32'/coin_type'/0'
-    libzcash::SaplingExtendedSpendingKey xsk = m_32h_cth.Derive(0 | ZIP32_HARDENED_KEY_LIMIT);
-
-    libzcash::SaplingPaymentAddress toAddress = xsk.DefaultAddress();
-
-    if (!HaveSpendingKeyForPaymentAddress(pwalletMain)(toAddress)) {
-        // Sapling account 0 must be the first address returned by GenerateNewSaplingZKey
-        assert(pwalletMain->GenerateNewSaplingZKey() == toAddress);
-    }
-
-    return toAddress;
+    // TODO: move off of legacy addresses.
+    auto generated = pwalletMain->GenerateLegacySaplingZKey(0);
+    return generated.first;
 }
 
 void AsyncRPCOperation_saplingmigration::cancel() {

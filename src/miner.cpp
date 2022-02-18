@@ -71,8 +71,8 @@ public:
     }
 };
 
-uint64_t nLastBlockTx = 0;
-uint64_t nLastBlockSize = 0;
+std::optional<uint64_t> last_block_num_txs;
+std::optional<uint64_t> last_block_size;
 
 // We want to sort transactions by priority and fee rate, so:
 typedef boost::tuple<double, CFeeRate, const CTransaction*> TxPriority;
@@ -117,9 +117,7 @@ void UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, 
 }
 
 bool IsShieldedMinerAddress(const MinerAddress& minerAddr) {
-    return !(
-        std::holds_alternative<InvalidMinerAddress>(minerAddr) ||
-        std::holds_alternative<boost::shared_ptr<CReserveScript>>(minerAddr));
+    return !std::holds_alternative<boost::shared_ptr<CReserveScript>>(minerAddr);
 }
 
 class AddFundingStreamValueToTx
@@ -241,8 +239,6 @@ public:
         }
     }
 
-    void operator()(const InvalidMinerAddress &invalid) const {}
-
     // Create shielded output
     void operator()(const libzcash::SaplingPaymentAddress &pa) const {
         auto ctx = librustzcash_sapling_proving_ctx_init();
@@ -331,7 +327,7 @@ CBlockTemplate* CreateNewBlock(const CChainParams& chainparams, const MinerAddre
 
     // Largest block you're willing to create:
     unsigned int nBlockMaxSize = GetArg("-blockmaxsize", DEFAULT_BLOCK_MAX_SIZE);
-    // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
+    // Limit to between 1K and MAX_BLOCK_SIZE-1K for sanity:
     nBlockMaxSize = std::max((unsigned int)1000, std::min((unsigned int)(MAX_BLOCK_SIZE-1000), nBlockMaxSize));
 
     // How much of the block should be dedicated to high-priority transactions,
@@ -610,8 +606,8 @@ CBlockTemplate* CreateNewBlock(const CChainParams& chainparams, const MinerAddre
             }
         }
 
-        nLastBlockTx = nBlockTx;
-        nLastBlockSize = nBlockSize;
+        last_block_num_txs = nBlockTx;
+        last_block_size = nBlockSize;
         LogPrintf("CreateNewBlock(): total size %u\n", nBlockSize);
 
         // Create coinbase tx
@@ -642,14 +638,38 @@ CBlockTemplate* CreateNewBlock(const CChainParams& chainparams, const MinerAddre
         pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
         if (chainparams.GetConsensus().NetworkUpgradeActive(nHeight, Consensus::UPGRADE_NU5)) {
             // hashBlockCommitments depends on the block transactions, so we have to
-            // update it whenever the coinbase transaction changes. Leave it unset here,
-            // like hashMerkleRoot, and instead cache what we will need to calculate it.
+            // update it whenever the coinbase transaction changes.
+            //
+            // - For the internal miner (either directly or via the `generate` RPC), this
+            //   will occur in `IncrementExtraNonce()`, like for `hashMerkleRoot`.
+            // - For `getblocktemplate`, we have two sets of fields to handle:
+            //   - The `defaultroots` fields, which contain both the default value (if
+            //     nothing in the template is altered), and the roots that can be used to
+            //     recalculate it (if some or all of the template is altered).
+            //   - The legacy `finalsaplingroothash`, `lightclientroothash`, and
+            //     `blockcommitmentshash` fields, which had the semantics of "place this
+            //     value into the block header and things will work" (except for in
+            //     v4.6.0 where they were accidentally set to always be the NU5 value).
+            //
+            // To accommodate all use cases, we calculate the `hashBlockCommitments`
+            // default value here (unlike `hashMerkleRoot`), and additionally cache the
+            // values necessary to recalculate it.
             pblocktemplate->hashChainHistoryRoot = view.GetHistoryRoot(prevConsensusBranchId);
+            pblocktemplate->hashAuthDataRoot = pblock->BuildAuthDataMerkleTree();
+            pblock->hashBlockCommitments = DeriveBlockCommitmentsHash(
+                    pblocktemplate->hashChainHistoryRoot,
+                    pblocktemplate->hashAuthDataRoot);
         } else if (IsActivationHeight(nHeight, chainparams.GetConsensus(), Consensus::UPGRADE_HEARTWOOD)) {
+            pblocktemplate->hashChainHistoryRoot.SetNull();
+            pblocktemplate->hashAuthDataRoot.SetNull();
             pblock->hashBlockCommitments.SetNull();
         } else if (chainparams.GetConsensus().NetworkUpgradeActive(nHeight, Consensus::UPGRADE_HEARTWOOD)) {
-            pblock->hashBlockCommitments = view.GetHistoryRoot(prevConsensusBranchId);
+            pblocktemplate->hashChainHistoryRoot = view.GetHistoryRoot(prevConsensusBranchId);
+            pblocktemplate->hashAuthDataRoot.SetNull();
+            pblock->hashBlockCommitments = pblocktemplate->hashChainHistoryRoot;
         } else {
+            pblocktemplate->hashChainHistoryRoot.SetNull();
+            pblocktemplate->hashAuthDataRoot.SetNull();
             pblock->hashBlockCommitments = sapling_tree.root();
         }
         UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev);
@@ -682,24 +702,40 @@ class MinerAddressScript : public CReserveScript
     void KeepScript() {}
 };
 
+std::optional<MinerAddress> ExtractMinerAddress::operator()(const CKeyID &keyID) const {
+    boost::shared_ptr<MinerAddressScript> mAddr(new MinerAddressScript());
+    mAddr->reserveScript = CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID) << OP_EQUALVERIFY << OP_CHECKSIG;
+    return mAddr;
+}
+std::optional<MinerAddress> ExtractMinerAddress::operator()(const CScriptID &addr) const {
+    return std::nullopt;
+}
+std::optional<MinerAddress> ExtractMinerAddress::operator()(const libzcash::SproutPaymentAddress &addr) const {
+    return std::nullopt;
+}
+std::optional<MinerAddress> ExtractMinerAddress::operator()(const libzcash::SaplingPaymentAddress &addr) const {
+    return addr;
+}
+std::optional<MinerAddress> ExtractMinerAddress::operator()(const libzcash::UnifiedAddress &addr) const {
+    for (const auto& receiver: addr) {
+        if (std::holds_alternative<libzcash::SaplingPaymentAddress>(receiver)) {
+            return std::get<libzcash::SaplingPaymentAddress>(receiver);
+        }
+    }
+    return std::nullopt;
+}
+
+
 void GetMinerAddress(MinerAddress &minerAddress)
 {
     KeyIO keyIO(Params());
 
-    // Try a transparent address first
     auto mAddrArg = GetArg("-mineraddress", "");
-    CTxDestination addr = keyIO.DecodeDestination(mAddrArg);
-    if (IsValidDestination(addr)) {
-        boost::shared_ptr<MinerAddressScript> mAddr(new MinerAddressScript());
-        CKeyID keyID = std::get<CKeyID>(addr);
-
-        mAddr->reserveScript = CScript() << OP_DUP << OP_HASH160 << ToByteVector(keyID) << OP_EQUALVERIFY << OP_CHECKSIG;
-        minerAddress = mAddr;
-    } else {
-        // Try a payment address
-        auto zaddr = std::visit(ExtractMinerAddress(), keyIO.DecodePaymentAddress(mAddrArg));
-        if (std::visit(IsValidMinerAddress(), zaddr)) {
-            minerAddress = zaddr;
+    auto zaddr0 = keyIO.DecodePaymentAddress(mAddrArg);
+    if (zaddr0.has_value()) {
+        auto zaddr = std::visit(ExtractMinerAddress(), zaddr0.value());
+        if (zaddr.has_value()) {
+            minerAddress = zaddr.value();
         }
     }
 }
@@ -727,9 +763,10 @@ void IncrementExtraNonce(
     pblock->vtx[0] = txCoinbase;
     pblock->hashMerkleRoot = pblock->BuildMerkleTree();
     if (consensusParams.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_NU5)) {
+        pblocktemplate->hashAuthDataRoot = pblock->BuildAuthDataMerkleTree();
         pblock->hashBlockCommitments = DeriveBlockCommitmentsHash(
             pblocktemplate->hashChainHistoryRoot,
-            pblock->BuildAuthDataMerkleTree());
+            pblocktemplate->hashAuthDataRoot);
     }
 }
 
