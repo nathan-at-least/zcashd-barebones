@@ -26,6 +26,7 @@
 #include "walletdb.h"
 #include "script/interpreter.h"
 #include "utiltime.h"
+#include "util/match.h"
 #include "zcash/IncrementalMerkleTree.hpp"
 #include "miner.h"
 #include "wallet/paymentdisclosuredb.h"
@@ -63,7 +64,7 @@ AsyncRPCOperation_shieldcoinbase::AsyncRPCOperation_shieldcoinbase(
         TransactionBuilder builder,
         CMutableTransaction contextualTx,
         std::vector<ShieldCoinbaseUTXO> inputs,
-        std::string toAddress,
+        PaymentAddress toAddress,
         CAmount fee,
         UniValue contextInfo) :
         builder_(builder), tx_(contextualTx), inputs_(inputs), fee_(fee), contextinfo_(contextInfo)
@@ -79,13 +80,23 @@ AsyncRPCOperation_shieldcoinbase::AsyncRPCOperation_shieldcoinbase(
     }
 
     //  Check the destination address is valid for this network i.e. not testnet being used on mainnet
-    KeyIO keyIO(Params());
-    auto address = keyIO.DecodePaymentAddress(toAddress);
-    if (IsValidPaymentAddress(address)) {
-        tozaddr_ = address;
-    } else {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid to address");
-    }
+    std::visit(match {
+        [&](CKeyID addr) {
+            throw JSONRPCError(RPC_VERIFY_REJECTED, "Cannot shield coinbase output to a p2pkh address.");
+        },
+        [&](CScriptID addr) {
+            throw JSONRPCError(RPC_VERIFY_REJECTED, "Cannot shield coinbase output to a p2sh address.");
+        },
+        [&](libzcash::SaplingPaymentAddress addr) {
+            tozaddr_ = addr;
+        },
+        [&](libzcash::SproutPaymentAddress addr) {
+            tozaddr_ = addr;
+        },
+        [&](libzcash::UnifiedAddress addr) {
+            tozaddr_ = addr;
+        }
+    }, toAddress);
 
     // Log the context info
     if (LogAcceptCategory("zrpcunsafe")) {
@@ -202,6 +213,14 @@ bool AsyncRPCOperation_shieldcoinbase::main_impl() {
     return std::visit(ShieldToAddress(this, sendAmount), tozaddr_);
 }
 
+bool ShieldToAddress::operator()(const CKeyID &addr) const {
+    return false;
+}
+
+bool ShieldToAddress::operator()(const CScriptID &addr) const {
+    return false;
+}
+
 bool ShieldToAddress::operator()(const libzcash::SproutPaymentAddress &zaddr) const {
     // update the transaction with these inputs
     CMutableTransaction rawTx(m_op->tx_);
@@ -239,6 +258,7 @@ bool ShieldToAddress::operator()(const libzcash::SaplingPaymentAddress &zaddr) c
     // generate a common one from the HD seed. This ensures the data is
     // recoverable, while keeping it logically separate from the ZIP 32
     // Sapling key hierarchy, which the user might not be using.
+    // FIXME: update to use the ZIP-316 OVK
     HDSeed seed = pwalletMain->GetHDSeedForRPC();
     uint256 ovk = ovkForShieldingFromTaddr(seed);
 
@@ -260,14 +280,14 @@ bool ShieldToAddress::operator()(const libzcash::SaplingPaymentAddress &zaddr) c
 }
 
 bool ShieldToAddress::operator()(const libzcash::UnifiedAddress &uaddr) const {
-    // TODO
+    // TODO check if an Orchard address is present, send to it if so.
+    const auto receiver{uaddr.GetSaplingReceiver()};
+    if (receiver.has_value()) {
+        return ShieldToAddress(m_op, sendAmount)(receiver.value());
+    }
+    // This UA must contain a transparent address, which can't be the destination of coinbase shielding.
     return false;
 }
-
-bool ShieldToAddress::operator()(const libzcash::InvalidEncoding& no) const {
-    return false;
-}
-
 
 UniValue AsyncRPCOperation_shieldcoinbase::perform_joinsplit(ShieldCoinbaseJSInfo & info) {
     uint32_t consensusBranchId;

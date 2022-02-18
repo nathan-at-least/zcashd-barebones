@@ -52,7 +52,7 @@ static CBlock CreateGenesisBlock(const char* pszTimestamp, const CScript& genesi
  * transaction cannot be spent since it did not originally exist in the
  * database (and is in any case of zero value).
  *
- * >>> from pyblake2 import blake2s
+ * >>> from hashlib import blake2s
  * >>> 'Zcash' + blake2s(b'The Economist 2016-10-29 Known unknown: Another crypto-currency is born. BTC#436254 0000000000000000044f321997f336d2908cf8c8d6893e88dbf067e2d949487d ETH#2521903 483039a6b6bd8bd05f0584f9a078d075e454925eb71c1f13eaff59b405a721bb DJIA close on 27 Oct 2016: 18,169.68').hexdigest()
  *
  * CBlock(hash=00040fe8, ver=4, hashPrevBlock=00000000000000, hashMerkleRoot=c4eaa5, nTime=1477641360, nBits=1f07ffff, nNonce=4695, vtx=1)
@@ -86,7 +86,7 @@ public:
     CMainParams() {
         keyConstants.strNetworkID = "main";
         strCurrencyUnits = "ZEC";
-        bip44CoinType = 133; // As registered in https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+        keyConstants.bip44CoinType = 133; // As registered in https://github.com/satoshilabs/slips/blob/master/slip-0044.md
         consensus.fCoinbaseMustBeShielded = true;
         consensus.nSubsidySlowStartInterval = 20000;
         consensus.nPreBlossomSubsidyHalvingInterval = Consensus::PRE_BLOSSOM_HALVING_INTERVAL;
@@ -370,7 +370,7 @@ public:
     CTestNetParams() {
         keyConstants.strNetworkID = "test";
         strCurrencyUnits = "TAZ";
-        bip44CoinType = 1;
+        keyConstants.bip44CoinType = 1;
         consensus.fCoinbaseMustBeShielded = true;
         consensus.nSubsidySlowStartInterval = 20000;
         consensus.nPreBlossomSubsidyHalvingInterval = Consensus::PRE_BLOSSOM_HALVING_INTERVAL;
@@ -621,7 +621,7 @@ public:
     CRegTestParams() {
         keyConstants.strNetworkID = "regtest";
         strCurrencyUnits = "REG";
-        bip44CoinType = 1;
+        keyConstants.bip44CoinType = 1;
         consensus.fCoinbaseMustBeShielded = false;
         consensus.nSubsidySlowStartInterval = 0;
         consensus.nPreBlossomSubsidyHalvingInterval = Consensus::PRE_BLOSSOM_REGTEST_HALVING_INTERVAL;
@@ -729,6 +729,9 @@ public:
         // Founders reward script expects a vector of 2-of-3 multisig addresses
         vFoundersRewardAddress = { "t2FwcEhFdNXuFMv1tcYwaBJtYVtMj8b1uTg" };
         assert(vFoundersRewardAddress.size() <= consensus.GetLastFoundersRewardBlockHeight(0));
+
+        // do not require the wallet backup to be confirmed in regtest mode
+        fRequireWalletBackup = false;
     }
 
     void UpdateNetworkUpgradeParameters(Consensus::UpgradeIndex idx, int nActivationHeight)
@@ -822,10 +825,10 @@ CScript CChainParams::GetFoundersRewardScriptAtHeight(int nHeight) const {
     assert(nHeight > 0 && nHeight <= consensus.GetLastFoundersRewardBlockHeight(nHeight));
 
     KeyIO keyIO(*this);
-    CTxDestination address = keyIO.DecodeDestination(GetFoundersRewardAddressAtHeight(nHeight).c_str());
-    assert(IsValidDestination(address));
-    assert(IsScriptDestination(address));
-    CScriptID scriptID = std::get<CScriptID>(address); // address is a variant
+    auto address = keyIO.DecodePaymentAddress(GetFoundersRewardAddressAtHeight(nHeight).c_str());
+    assert(address.has_value());
+    assert(std::holds_alternative<CScriptID>(address.value()));
+    CScriptID scriptID = std::get<CScriptID>(address.value());
     CScript script = CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;
     return script;
 }

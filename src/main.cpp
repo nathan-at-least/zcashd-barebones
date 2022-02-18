@@ -2019,27 +2019,31 @@ bool AcceptToMemoryPool(
 bool GetTimestampIndex(unsigned int high, unsigned int low, bool fActiveOnly,
     std::vector<std::pair<uint256, unsigned int> > &hashes)
 {
-    if (!fTimestampIndex)
-        return error("Timestamp index not enabled");
-
-    if (!pblocktree->ReadTimestampIndex(high, low, fActiveOnly, hashes))
-        return error("Unable to get hashes for timestamps");
-
+    if (!fTimestampIndex) {
+        LogPrint("rpc", "Timestamp index not enabled");
+        return false;
+    }
+    if (!pblocktree->ReadTimestampIndex(high, low, fActiveOnly, hashes)) {
+        LogPrint("rpc", "Unable to get hashes for timestamps");
+        return false;
+    }
     return true;
 }
 
 bool GetSpentIndex(CSpentIndexKey &key, CSpentIndexValue &value)
 {
     AssertLockHeld(cs_main);
-    if (!fSpentIndex)
-        return error("Spent index not enabled");
-
+    if (!fSpentIndex) {
+        LogPrint("rpc", "Spent index not enabled");
+        return false;
+    }
     if (mempool.getSpentIndex(key, value))
         return true;
 
-    if (!pblocktree->ReadSpentIndex(key, value))
-        return error("Unable to get spent index information");
-
+    if (!pblocktree->ReadSpentIndex(key, value)) {
+        LogPrint("rpc", "Unable to get spent index information");
+        return false;
+    }
     return true;
 }
 
@@ -2047,24 +2051,28 @@ bool GetAddressIndex(const uint160& addressHash, int type,
                      std::vector<CAddressIndexDbEntry>& addressIndex,
                      int start, int end)
 {
-    if (!fAddressIndex)
-        return error("address index not enabled");
-
-    if (!pblocktree->ReadAddressIndex(addressHash, type, addressIndex, start, end))
-        return error("unable to get txids for address");
-
+    if (!fAddressIndex) {
+        LogPrint("rpc", "address index not enabled");
+        return false;
+    }
+    if (!pblocktree->ReadAddressIndex(addressHash, type, addressIndex, start, end)) {
+        LogPrint("rpc", "unable to get txids for address");
+        return false;
+    }
     return true;
 }
 
 bool GetAddressUnspent(const uint160& addressHash, int type,
                        std::vector<CAddressUnspentDbEntry>& unspentOutputs)
 {
-    if (!fAddressIndex)
-        return error("address index not enabled");
-
-    if (!pblocktree->ReadAddressUnspentIndex(addressHash, type, unspentOutputs))
-        return error("unable to get txids for address");
-
+    if (!fAddressIndex) {
+        LogPrint("rpc", "address index not enabled");
+        return false;
+    }
+    if (!pblocktree->ReadAddressUnspentIndex(addressHash, type, unspentOutputs)) {
+        LogPrint("rpc", "unable to get txids for address");
+        return false;
+    }
     return true;
 }
 
@@ -3125,7 +3133,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     SaplingMerkleTree sapling_tree;
     assert(view.GetSaplingAnchorAt(view.GetBestAnchor(SAPLING), sapling_tree));
 
-    OrchardMerkleTree orchard_tree;
+    OrchardMerkleFrontier orchard_tree;
     assert(view.GetOrchardAnchorAt(view.GetBestAnchor(ORCHARD), orchard_tree));
 
     // Grab the consensus branch ID for this block and its parent
@@ -5374,12 +5382,13 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
     // Flags used to permit skipping checks for efficiency
     auto verifier = ProofVerifier::Disabled(); // No need to verify JoinSplits twice
     bool fCheckTransactions = true;
-    // We may as well check Orchard authorizations if we are checking
-    // transactions, since we can batch-validate them.
-    auto orchardAuth = orchard::AuthValidator::Batch();
 
     for (CBlockIndex* pindex = chainActive.Tip(); pindex && pindex->pprev; pindex = pindex->pprev)
     {
+        // We may as well check Orchard authorizations if we are checking
+        // transactions, since we can batch-validate them.
+        auto orchardAuth = orchard::AuthValidator::Batch();
+
         boost::this_thread::interruption_point();
         uiInterface.ShowProgress(_("Verifying blocks..."), std::max(1, std::min(99, (int)(((double)(chainActive.Height() - pindex->nHeight)) / (double)nCheckDepth * (nCheckLevel >= 4 ? 50 : 100)))));
         if (pindex->nHeight < chainActive.Height()-nCheckDepth)
@@ -5419,6 +5428,10 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
             } else {
                 nGoodTransactions += block.vtx.size();
             }
+        }
+
+        if (!orchardAuth.Validate()) {
+            return error("VerifyDB(): Orchard batch validation failed for block at height %d", pindex->nHeight);
         }
 
         if (ShutdownRequested())
@@ -6181,7 +6194,7 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                     if ((mi->second->nVersion <= 4) != (inv.type == MSG_TX)) {
                         Misbehaving(pfrom->GetId(), 100);
                         LogPrint("net", "Wrong INV message type used for v%d tx", mi->second->nVersion);
-                        // Break so that this inv mesage will be erased from the queue
+                        // Break so that this inv message will be erased from the queue
                         // (otherwise the peer would repeatedly hit this case until its
                         // Misbehaving level rises above -banscore, no matter what the
                         // user set it to).
@@ -6202,7 +6215,7 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
                         if ((txinfo.tx->nVersion <= 4) != (inv.type == MSG_TX)) {
                             Misbehaving(pfrom->GetId(), 100);
                             LogPrint("net", "Wrong INV message type used for v%d tx", txinfo.tx->nVersion);
-                            // Break so that this inv mesage will be erased from the queue.
+                            // Break so that this inv message will be erased from the queue.
                             break;
                         }
                         // Ensure we only reply with a transaction if it is exactly what
@@ -7201,7 +7214,7 @@ bool static ProcessMessage(const CChainParams& chainparams, CNode* pfrom, string
                 LogPrint("net", "Reject %s\n", SanitizeString(ss.str()));
             } catch (const std::ios_base::failure&) {
                 // Avoid feedback loops by preventing reject messages from triggering a new reject message.
-                LogPrint("net", "Unparseable reject message received\n");
+                LogPrint("net", "Unparsable reject message received\n");
             }
         }
     }

@@ -126,12 +126,12 @@ TransactionBuilderResult::TransactionBuilderResult(const CTransaction& tx) : may
 
 TransactionBuilderResult::TransactionBuilderResult(const std::string& error) : maybeError(error) {}
 
-bool TransactionBuilderResult::IsTx() { return maybeTx != std::nullopt; }
+bool TransactionBuilderResult::IsTx() { return maybeTx.has_value(); }
 
-bool TransactionBuilderResult::IsError() { return maybeError != std::nullopt; }
+bool TransactionBuilderResult::IsError() { return maybeError.has_value(); }
 
 CTransaction TransactionBuilderResult::GetTxOrThrow() {
-    if (maybeTx) {
+    if (maybeTx.has_value()) {
         return maybeTx.value();
     } else {
         throw JSONRPCError(RPC_WALLET_ERROR, "Failed to build transaction: " + GetError());
@@ -139,7 +139,7 @@ CTransaction TransactionBuilderResult::GetTxOrThrow() {
 }
 
 std::string TransactionBuilderResult::GetError() {
-    if (maybeError) {
+    if (maybeError.has_value()) {
         return maybeError.value();
     } else {
         // This can only happen if isTx() is true in which case we should not call getError()
@@ -216,7 +216,7 @@ void TransactionBuilder::AddSaplingOutput(
 
     libzcash::Zip212Enabled zip_212_enabled = libzcash::Zip212Enabled::BeforeZip212;
     // We use nHeight = chainActive.Height() + 1 since the output will be included in the next block
-    if (Params().GetConsensus().NetworkUpgradeActive(nHeight, Consensus::UPGRADE_CANOPY)) {
+    if (consensusParams.NetworkUpgradeActive(nHeight, Consensus::UPGRADE_CANOPY)) {
         zip_212_enabled = libzcash::Zip212Enabled::AfterZip212;
     }
 
@@ -280,29 +280,31 @@ void TransactionBuilder::SetFee(CAmount fee)
     this->fee = fee;
 }
 
-void TransactionBuilder::SendChangeTo(libzcash::SaplingPaymentAddress changeAddr, uint256 ovk)
-{
-    saplingChangeAddr = std::make_pair(ovk, changeAddr);
-    sproutChangeAddr = std::nullopt;
+// TODO: remove support for transparent change?
+void TransactionBuilder::SendChangeTo(
+        const libzcash::RecipientAddress& changeAddr,
+        const uint256& ovk) {
     tChangeAddr = std::nullopt;
-}
-
-void TransactionBuilder::SendChangeTo(libzcash::SproutPaymentAddress changeAddr)
-{
-    sproutChangeAddr = changeAddr;
-    saplingChangeAddr = std::nullopt;
-    tChangeAddr = std::nullopt;
-}
-
-void TransactionBuilder::SendChangeTo(CTxDestination& changeAddr)
-{
-    if (!IsValidDestination(changeAddr)) {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid change address, not a valid taddr.");
-    }
-
-    tChangeAddr = changeAddr;
     saplingChangeAddr = std::nullopt;
     sproutChangeAddr = std::nullopt;
+
+    std::visit(match {
+        [&](const CKeyID& keyId) {
+            tChangeAddr = keyId;
+        },
+        [&](const CScriptID& scriptId) {
+            tChangeAddr = scriptId;
+        },
+        [&](const libzcash::SaplingPaymentAddress& changeDest) {
+            saplingChangeAddr = std::make_pair(ovk, changeDest);
+        }
+    }, changeAddr);
+}
+
+void TransactionBuilder::SendChangeToSprout(const libzcash::SproutPaymentAddress& zaddr) {
+    tChangeAddr = std::nullopt;
+    saplingChangeAddr = std::nullopt;
+    sproutChangeAddr = zaddr;
 }
 
 TransactionBuilderResult TransactionBuilder::Build()
@@ -522,6 +524,7 @@ void TransactionBuilder::CheckOrSetUsingSprout()
         auto txVersionInfo = CurrentTxVersionInfo(consensusParams, nHeight, usingSprout.value());
         mtx.nVersionGroupId = txVersionInfo.nVersionGroupId;
         mtx.nVersion        = txVersionInfo.nVersion;
+        mtx.nConsensusBranchId = std::nullopt;
     }
 }
 
