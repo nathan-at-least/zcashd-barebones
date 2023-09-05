@@ -13,7 +13,7 @@ jobs:
           python3-zmq zlib1g-dev curl bsdmainutils automake libtinfo5
           python3-pip python3-dev
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - run: pip3 install -r ./contrib/ci-builders/tekton/requirements.txt
 
